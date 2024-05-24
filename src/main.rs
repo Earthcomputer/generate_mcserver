@@ -15,10 +15,15 @@ const CACHE_DIR: &str = ".cache";
 
 fn main() {
     if let Err(err) = do_main() {
-        let mut chain = err.chain();
-        eprintln!("{} error: {}", crate_name!(), chain.next().unwrap());
-        for err in chain {
-            eprintln!("caused by: {err}");
+        #[cfg(debug_assertions)]
+        eprintln!("{} error: {:#?}", crate_name!(), err);
+        #[cfg(not(debug_assertions))]
+        {
+            let mut chain = err.chain();
+            eprintln!("{} error: {}", crate_name!(), chain.next().unwrap());
+            for err in chain {
+                eprintln!("caused by: {err}");
+            }
         }
     }
 }

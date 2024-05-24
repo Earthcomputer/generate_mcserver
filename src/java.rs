@@ -14,8 +14,14 @@ const JAVA_EXE_NAME: &str = "javaw.exe";
 const JAVA_EXE_NAME: &str = "java";
 
 #[cfg(target_os = "windows")]
-#[allow(non_snake_case, non_upper_case_globals, non_camel_case_types)]
+#[allow(
+    non_snake_case,
+    non_upper_case_globals,
+    non_camel_case_types,
+    clippy::upper_case_acronyms
+)]
 mod reg {
+    use anyhow::{bail, Context};
     use std::borrow::Cow;
     use std::ffi::c_void;
     use std::mem::MaybeUninit;
@@ -182,6 +188,14 @@ mod reg {
         fn get(&self, key: &[u16]) -> anyhow::Result<String> {
             assert!(key.ends_with(&[0]));
 
+            let context = || {
+                format!(
+                    "{}\\{}",
+                    wstr_to_string(&self.key_name),
+                    wstr_to_string(key)
+                )
+            };
+
             unsafe {
                 let mut value_size = 0;
                 let err = RegQueryValueExW(
@@ -193,9 +207,16 @@ mod reg {
                     &mut value_size,
                 );
                 if err != ERROR_SUCCESS {
-                    return Err(io::Error::from_raw_os_error(err as i32).into());
+                    return Err(io::Error::from_raw_os_error(err as i32)).with_context(context);
                 }
-                let mut value = Vec::<u16>::with_capacity(value_size as usize);
+                if value_size % 2 != 0 {
+                    bail!(
+                        "Registry value for key {}\\{} was not a wstring",
+                        wstr_to_string(self.key_name),
+                        wstr_to_string(key),
+                    );
+                }
+                let mut value = Vec::<u16>::with_capacity(value_size as usize / 2);
                 let err = RegQueryValueExW(
                     self.key,
                     key.as_ptr(),
@@ -205,13 +226,13 @@ mod reg {
                     &mut value_size,
                 );
                 if err != ERROR_SUCCESS {
-                    return Err(io::Error::from_raw_os_error(err as i32).into());
+                    return Err(io::Error::from_raw_os_error(err as i32)).with_context(context);
                 }
-                value.set_len(value_size as usize);
+                value.set_len(value_size as usize / 2);
                 if value.ends_with(&[0]) {
                     value.pop();
                 }
-                Ok(String::from_utf16(&value)?)
+                Ok(String::from_utf16(&value).with_context(context)?)
             }
         }
     }
@@ -234,6 +255,14 @@ mod reg {
             i += 1;
         }
         result
+    }
+
+    fn wstr_to_string(str: &[u16]) -> String {
+        let mut str = String::from_utf16_lossy(str);
+        if str.ends_with('\0') {
+            str.pop();
+        }
+        str
     }
 
     pub(super) fn find_java_from_registry_key(
@@ -507,16 +536,17 @@ fn find_platform_specific_java_candidates() -> anyhow::Result<Vec<PathBuf>> {
         "/System/Library/Frameworks/JavaVM.framework/Versions/Current/Commands/java",
     ));
 
-    match fs::read_dir("/System/Library/Java/JavaVirtualMachines/") {
+    let java_jvms_dir = "/System/Library/Java/JavaVirtualMachines/";
+    match fs::read_dir(java_jvms_dir) {
         Ok(library_jvm_javas) => {
             for java in library_jvm_javas {
-                let java = java?;
+                let java = java.context(java_jvms_dir)?;
                 java_candidates.push(java.path().join("Contents/Home/bin/java"));
                 java_candidates.push(java.path().join("Contents/Commands/java"));
             }
         }
         Err(err) if is_not_found(&err) => {}
-        Err(err) => return Err(err.into()),
+        Err(err) => return Err(err).context(java_jvms_dir),
     }
 
     java_candidates.push(
@@ -536,13 +566,13 @@ fn find_platform_specific_java_candidates() -> anyhow::Result<Vec<PathBuf>> {
         match fs::read_dir(dir_path) {
             Ok(entries) => {
                 for entry in entries {
-                    let entry = entry?;
+                    let entry = entry.with_context(|| dir_path.to_string_lossy().into_owned())?;
                     java_candidates.push(entry.path().join("jre/bin/java"));
                     java_candidates.push(entry.path().join("bin/java"));
                 }
             }
             Err(err) if is_not_found(&err) => {}
-            Err(err) => return Err(err.into()),
+            Err(err) => return Err(err).with_context(|| dir_path.to_string_lossy().into_owned()),
         }
         Ok(())
     };
@@ -605,19 +635,19 @@ fn get_minecraft_java_bundle() -> anyhow::Result<Vec<PathBuf>> {
     #[cfg(target_os = "windows")]
     let process_paths = vec![
         [
-            &env::var_os("APPDATA").unwrap_or_else(|| std::ffi::OsString::new()),
-            std::ffi::OsStr::new(".minecraft"),
-            std::ffi::OsStr::new("runtime"),
+            &env::var_os("APPDATA").unwrap_or_default(),
+            OsStr::new(".minecraft"),
+            OsStr::new("runtime"),
         ]
         .iter()
         .collect(),
         [
-            &env::var_os("LOCALAPPDATA").unwrap_or_else(|| std::ffi::OsString::new()),
-            std::ffi::OsStr::new("Packages"),
-            std::ffi::OsStr::new("Microsoft.4297127D64EC6_8wekyb3d8bbwe"),
-            std::ffi::OsStr::new("LocalCache"),
-            std::ffi::OsStr::new("Local"),
-            std::ffi::OsStr::new("runtime"),
+            &env::var_os("LOCALAPPDATA").unwrap_or_default(),
+            OsStr::new("Packages"),
+            OsStr::new("Microsoft.4297127D64EC6_8wekyb3d8bbwe"),
+            OsStr::new("LocalCache"),
+            OsStr::new("Local"),
+            OsStr::new("runtime"),
         ]
         .iter()
         .collect(),
@@ -637,10 +667,12 @@ fn get_minecraft_java_bundle() -> anyhow::Result<Vec<PathBuf>> {
 
     let mut javas = Vec::new();
     while let Some(dir_path) = process_paths.pop_front() {
-        let entries = match fs::read_dir(dir_path) {
-            Ok(entries) => entries.collect::<io::Result<Vec<_>>>()?,
+        let entries = match fs::read_dir(&dir_path) {
+            Ok(entries) => entries
+                .collect::<io::Result<Vec<_>>>()
+                .with_context(|| dir_path.to_string_lossy().into_owned())?,
             Err(err) if is_not_found(&err) => continue,
-            Err(err) => return Err(err.into()),
+            Err(err) => return Err(err).with_context(|| dir_path.to_string_lossy().into_owned()),
         };
 
         let mut bin_found = false;
@@ -678,14 +710,14 @@ fn get_java_version_from_release_file(java_path: &Path) -> anyhow::Result<Option
     let Some(parent) = java_path.parent().and_then(|parent| parent.parent()) else {
         return Ok(None);
     };
-    let release_file = parent.join("release");
-    let release_file = match File::open(release_file) {
+    let release_path = parent.join("release");
+    let release_file = match File::open(&release_path) {
         Ok(release_file) => release_file,
         Err(err) if is_not_found(&err) => return Ok(None),
-        Err(err) => return Err(err.into()),
+        Err(err) => return Err(err).with_context(|| release_path.to_string_lossy().into_owned()),
     };
     for line in BufReader::new(release_file).lines() {
-        let line = line?;
+        let line = line.with_context(|| release_path.to_string_lossy().into_owned())?;
         if let Some(version) = line
             .strip_prefix("JAVA_VERSION=\"")
             .and_then(|version| version.strip_suffix('"'))
@@ -715,7 +747,8 @@ fn get_java_version_from_system_property(
     let output = Command::new(java_path)
         .arg("VersionCheck")
         .current_dir(version_check_dir.path())
-        .output()?;
+        .output()
+        .context("java version check")?;
     if !output.status.success() {
         bail!(
             "{} returned exit code {} on version check",
@@ -750,8 +783,8 @@ pub fn find_java_candidates() -> anyhow::Result<Vec<JavaCandidate>> {
 
 #[derive(Debug)]
 pub struct JavaCandidate {
-    path: PathBuf,
-    version: String,
+    pub path: PathBuf,
+    pub version: String,
 }
 
 fn is_not_found(err: &io::Error) -> bool {
