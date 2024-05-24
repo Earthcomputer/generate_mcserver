@@ -1,4 +1,5 @@
 use anyhow::{bail, Context};
+use std::cmp::Ordering;
 use std::collections::{BTreeSet, VecDeque};
 use std::ffi::OsStr;
 use std::fs::File;
@@ -6,6 +7,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{env, fs, io};
+use std::fmt::{Display, Formatter};
 use tempfile::TempDir;
 
 #[cfg(target_os = "windows")]
@@ -804,4 +806,120 @@ fn is_not_found(err: &io::Error) -> bool {
     };
 
     raw_os_error == not_a_directory_error
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ParsedJavaVersion {
+    major: u32,
+    minor: u32,
+    security: u32,
+    prerelease: String,
+}
+
+impl ParsedJavaVersion {
+    fn parse(str: &str) -> anyhow::Result<ParsedJavaVersion> {
+        fn find_first_non_digit(str: &str, start: usize) -> usize {
+            str[start..]
+                .find(|c: char| !c.is_ascii_digit())
+                .map(|index| index + start)
+                .unwrap_or(str.len())
+        }
+        fn find_first_non_identifier(str: &str, start: usize) -> usize {
+            str[start..]
+                .find(|c: char| !c.is_ascii_alphanumeric())
+                .map(|index| index + start)
+                .unwrap_or(str.len())
+        }
+
+        fn parse_inner(
+            str: &str,
+            mut pos: usize,
+            security_char: char,
+        ) -> anyhow::Result<ParsedJavaVersion> {
+            let major_start = pos;
+            pos = find_first_non_digit(str, major_start);
+            let major = str[major_start..pos]
+                .parse()
+                .with_context(|| format!("invalid version {str}"))?;
+
+            let mut minor = 0;
+            if str[pos..].starts_with('.') {
+                let minor_start = pos + 1;
+                pos = find_first_non_digit(str, minor_start);
+                minor = str[minor_start..pos]
+                    .parse()
+                    .with_context(|| format!("invalid version {str}"))?;
+            }
+
+            let mut security = 0;
+            if str[pos..].starts_with(security_char) {
+                let security_start = pos + 1;
+                pos = find_first_non_digit(str, security_start);
+                security = str[security_start..pos]
+                    .parse()
+                    .with_context(|| format!("invalid version {str}"))?;
+            }
+
+            let mut prerelease = "";
+            if str[pos..].starts_with('-') {
+                let prerelease_start = pos + 1;
+                pos = find_first_non_identifier(str, prerelease_start);
+                prerelease = &str[prerelease_start..pos];
+            }
+
+            if pos != str.len() {
+                bail!("invalid version {str}");
+            }
+
+            Ok(ParsedJavaVersion {
+                major,
+                minor,
+                security,
+                prerelease: prerelease.to_owned(),
+            })
+        }
+
+        if str.starts_with("1.") {
+            parse_inner(str, 2, '_')
+        } else {
+            parse_inner(str, 0, '.')
+        }
+    }
+}
+
+impl Display for ParsedJavaVersion {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let old_format = self.major <= 8;
+        if old_format {
+            f.write_str("1.")?;
+        }
+
+    }
+}
+
+impl PartialOrd for ParsedJavaVersion {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        let cmp = self.major.cmp(&other.major);
+        if cmp != Ordering::Equal {
+            return Some(cmp);
+        }
+
+        let cmp = self.minor.cmp(&other.minor);
+        if cmp != Ordering::Equal {
+            return Some(cmp);
+        }
+
+        let cmp = self.security.cmp(&other.security);
+        if cmp != Ordering::Equal {
+            return Some(cmp);
+        }
+
+        return Some(Ordering::Equal);
+    }
+}
+
+impl Ord for ParsedJavaVersion {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.partial_cmp(other).unwrap()
+    }
 }
