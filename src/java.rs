@@ -212,7 +212,7 @@ mod reg {
                 if value_size % 2 != 0 {
                     bail!(
                         "Registry value for key {}\\{} was not a wstring",
-                        wstr_to_string(self.key_name),
+                        wstr_to_string(&self.key_name),
                         wstr_to_string(key),
                     );
                 }
@@ -232,7 +232,7 @@ mod reg {
                 if value.ends_with(&[0]) {
                     value.pop();
                 }
-                Ok(String::from_utf16(&value).with_context(context)?)
+                String::from_utf16(&value).with_context(context)
             }
         }
     }
@@ -271,12 +271,6 @@ mod reg {
         key_java_dir: &[u16],
         sub_key_suffix: &[u16],
     ) -> anyhow::Result<Vec<PathBuf>> {
-        let arch_type = match key_type {
-            KEY_WOW64_64KEY => "64",
-            KEY_WOW64_32KEY => "32",
-            _ => "unknown",
-        };
-
         let Some(jre_key) =
             RegistryKey::open(key_name, KEY_READ | key_type | KEY_ENUMERATE_SUB_KEYS)
         else {
