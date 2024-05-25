@@ -1,11 +1,11 @@
-use anyhow::bail;
+use anyhow::{bail, Context};
 use reqwest::blocking::Client;
 use serde::de::{Error, Unexpected};
 use serde::{Deserialize, Deserializer};
 use sha1::digest::Output;
 use sha1::{Digest, Sha1};
 use std::fs::File;
-use std::io::{Seek, SeekFrom, Write};
+use std::io::Write;
 use std::path::Path;
 use std::{fs, io};
 use time::OffsetDateTime;
@@ -47,11 +47,18 @@ impl ManifestVersion {
     pub fn download(&self, client: &Client, file: &Path) -> anyhow::Result<Version> {
         if let Ok(file_contents) = fs::read(file) {
             if Sha1::digest(&file_contents) == self.sha1.0 {
-                return Ok(serde_json::from_slice(&file_contents)?);
+                return serde_json::from_slice(&file_contents)
+                    .with_context(|| file.display().to_string());
             }
         }
 
-        let file_contents = client.get(self.url.clone()).send()?.bytes()?.to_vec();
+        let file_contents = client
+            .get(self.url.clone())
+            .send()
+            .with_context(|| self.url.clone())?
+            .bytes()
+            .with_context(|| format!("downloading from {} to {}", self.url, file.display()))?
+            .to_vec();
         if Sha1::digest(&file_contents) != self.sha1.0 {
             bail!(
                 "file downloaded from {} did not match the expected sha1 hash",
@@ -59,7 +66,7 @@ impl ManifestVersion {
             );
         }
 
-        Ok(serde_json::from_slice(&file_contents)?)
+        serde_json::from_slice(&file_contents).with_context(|| file.display().to_string())
     }
 }
 
@@ -91,8 +98,8 @@ pub struct VersionDownload {
 }
 
 impl VersionDownload {
-    pub fn download(&self, client: &Client, file: &Path) -> anyhow::Result<()> {
-        if let Ok(mut existing_file) = File::open(file) {
+    pub fn download(&self, client: &Client, path: &Path) -> anyhow::Result<()> {
+        if let Ok(mut existing_file) = File::open(path) {
             let mut digest = Sha1::default();
             if io::copy(&mut existing_file, &mut digest).is_ok() && digest.finalize() == self.sha1.0
             {
@@ -100,13 +107,23 @@ impl VersionDownload {
             }
         }
 
-        let mut file = &mut File::options().read(true).write(true).open(file)?;
-        client.get(self.url.clone()).send()?.copy_to(&mut file)?;
-        file.flush()?;
+        let mut file = File::options()
+            .create(true)
+            .write(true)
+            .open(path)
+            .with_context(|| path.display().to_string())?;
+        client
+            .get(self.url.clone())
+            .send()
+            .with_context(|| self.url.clone())?
+            .copy_to(&mut file)
+            .with_context(|| format!("downloading from {} to {}", self.url, path.display()))?;
+        file.flush().with_context(|| path.display().to_string())?;
+        drop(file);
 
-        file.seek(SeekFrom::Start(0))?;
+        let mut file = File::open(path).with_context(|| path.display().to_string())?;
         let mut digest = Sha1::default();
-        io::copy(&mut file, &mut digest)?;
+        io::copy(&mut file, &mut digest).with_context(|| path.display().to_string())?;
         if digest.finalize() != self.sha1.0 {
             bail!(
                 "file downloaded from {} did not match the expected sha1 hash",

@@ -2,12 +2,12 @@ use anyhow::{bail, Context};
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, VecDeque};
 use std::ffi::OsStr;
+use std::fmt::{Display, Formatter, Write};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{env, fs, io};
-use std::fmt::{Display, Formatter};
 use tempfile::TempDir;
 
 #[cfg(target_os = "windows")]
@@ -562,13 +562,13 @@ fn find_platform_specific_java_candidates() -> anyhow::Result<Vec<PathBuf>> {
         match fs::read_dir(dir_path) {
             Ok(entries) => {
                 for entry in entries {
-                    let entry = entry.with_context(|| dir_path.to_string_lossy().into_owned())?;
+                    let entry = entry.with_context(|| dir_path.display().to_string())?;
                     java_candidates.push(entry.path().join("jre/bin/java"));
                     java_candidates.push(entry.path().join("bin/java"));
                 }
             }
             Err(err) if is_not_found(&err) => {}
-            Err(err) => return Err(err).with_context(|| dir_path.to_string_lossy().into_owned()),
+            Err(err) => return Err(err).with_context(|| dir_path.display().to_string()),
         }
         Ok(())
     };
@@ -618,7 +618,7 @@ fn find_java_paths() -> anyhow::Result<Vec<PathBuf>> {
         .into_iter()
         .filter_map(|path| match fs::canonicalize(&path) {
             Err(err) if is_not_found(&err) => None,
-            result => Some(result.with_context(|| path.to_string_lossy().into_owned())),
+            result => Some(result.with_context(|| path.display().to_string())),
         })
         .filter(|path| match path {
             Ok(path) => seen_candidates.insert(path.clone()),
@@ -666,9 +666,9 @@ fn get_minecraft_java_bundle() -> anyhow::Result<Vec<PathBuf>> {
         let entries = match fs::read_dir(&dir_path) {
             Ok(entries) => entries
                 .collect::<io::Result<Vec<_>>>()
-                .with_context(|| dir_path.to_string_lossy().into_owned())?,
+                .with_context(|| dir_path.display().to_string())?,
             Err(err) if is_not_found(&err) => continue,
-            Err(err) => return Err(err).with_context(|| dir_path.to_string_lossy().into_owned()),
+            Err(err) => return Err(err).with_context(|| dir_path.display().to_string()),
         };
 
         let mut bin_found = false;
@@ -710,10 +710,10 @@ fn get_java_version_from_release_file(java_path: &Path) -> anyhow::Result<Option
     let release_file = match File::open(&release_path) {
         Ok(release_file) => release_file,
         Err(err) if is_not_found(&err) => return Ok(None),
-        Err(err) => return Err(err).with_context(|| release_path.to_string_lossy().into_owned()),
+        Err(err) => return Err(err).with_context(|| release_path.display().to_string()),
     };
     for line in BufReader::new(release_file).lines() {
-        let line = line.with_context(|| release_path.to_string_lossy().into_owned())?;
+        let line = line.with_context(|| release_path.display().to_string())?;
         if let Some(version) = line
             .strip_prefix("JAVA_VERSION=\"")
             .and_then(|version| version.strip_suffix('"'))
@@ -748,7 +748,7 @@ fn get_java_version_from_system_property(
     if !output.status.success() {
         bail!(
             "{} returned exit code {} on version check",
-            java_path.to_string_lossy(),
+            java_path.display(),
             output.status
         )
     }
@@ -770,17 +770,29 @@ pub fn find_java_candidates() -> anyhow::Result<Vec<JavaCandidate>> {
     let mut version_check_dir = None;
     find_java_paths()?
         .into_iter()
-        .map(|path| {
-            let version = get_java_version(&path, &mut version_check_dir)?;
-            Ok(JavaCandidate { path, version })
-        })
+        .map(|path| create_java_candidate_for_path(path, &mut version_check_dir))
         .collect::<anyhow::Result<Vec<_>>>()
+}
+
+pub fn create_java_candidate_for_path(
+    path: PathBuf,
+    version_check_dir: &mut Option<TempDir>,
+) -> anyhow::Result<JavaCandidate> {
+    let version = get_java_version(&path, version_check_dir)?;
+    let version = ParsedJavaVersion::parse(&version)?;
+    Ok(JavaCandidate { path, version })
 }
 
 #[derive(Debug)]
 pub struct JavaCandidate {
     pub path: PathBuf,
-    pub version: String,
+    pub version: ParsedJavaVersion,
+}
+
+impl Display for JavaCandidate {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({})", self.path.display(), self.version)
+    }
 }
 
 fn is_not_found(err: &io::Error) -> bool {
@@ -809,8 +821,8 @@ fn is_not_found(err: &io::Error) -> bool {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct ParsedJavaVersion {
-    major: u32,
+pub struct ParsedJavaVersion {
+    pub major: u32,
     minor: u32,
     security: u32,
     prerelease: String,
@@ -893,33 +905,48 @@ impl Display for ParsedJavaVersion {
         if old_format {
             f.write_str("1.")?;
         }
-
+        Display::fmt(&self.major, f)?;
+        if self.minor != 0 || self.security != 0 || !self.prerelease.is_empty() {
+            write!(f, ".{}", self.minor)?;
+            if self.security != 0 || !self.prerelease.is_empty() {
+                if old_format {
+                    f.write_char('_')?;
+                } else {
+                    f.write_char('.')?;
+                }
+                Display::fmt(&self.security, f)?;
+                if !self.prerelease.is_empty() {
+                    write!(f, "-{}", self.prerelease)?;
+                }
+            }
+        }
+        Ok(())
     }
 }
 
 impl PartialOrd for ParsedJavaVersion {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        let cmp = self.major.cmp(&other.major);
-        if cmp != Ordering::Equal {
-            return Some(cmp);
-        }
-
-        let cmp = self.minor.cmp(&other.minor);
-        if cmp != Ordering::Equal {
-            return Some(cmp);
-        }
-
-        let cmp = self.security.cmp(&other.security);
-        if cmp != Ordering::Equal {
-            return Some(cmp);
-        }
-
-        return Some(Ordering::Equal);
+        Some(self.cmp(other))
     }
 }
 
 impl Ord for ParsedJavaVersion {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.partial_cmp(other).unwrap()
+        let cmp = self.major.cmp(&other.major);
+        if cmp != Ordering::Equal {
+            return cmp;
+        }
+
+        let cmp = self.minor.cmp(&other.minor);
+        if cmp != Ordering::Equal {
+            return cmp;
+        }
+
+        let cmp = self.security.cmp(&other.security);
+        if cmp != Ordering::Equal {
+            return cmp;
+        }
+
+        Ordering::Equal
     }
 }
