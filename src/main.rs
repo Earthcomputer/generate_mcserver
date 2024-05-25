@@ -1,18 +1,26 @@
-use crate::cli::{Cli, Command, NewCommand};
-use crate::java::{create_java_candidate_for_path, find_java_candidates};
-use crate::mojang::Manifest;
-use anyhow::bail;
+use crate::cli::{Cli, Command};
+use crate::commands::new::make_new_profile;
 use clap::{crate_name, crate_version, Parser};
 use reqwest::blocking::Client;
-use std::cmp::Ordering;
-use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::{fs, io};
 
 mod cli;
+mod commands;
 mod java;
 mod mojang;
 
 const CACHE_DIR: &str = ".cache";
+
+#[cfg(target_os = "windows")]
+const RUN_SERVER_FILENAME: &str = "run_server.bat";
+#[cfg(not(target_os = "windows"))]
+const RUN_SERVER_FILENAME: &str = "run_server";
+
+#[cfg(windows)]
+const LINE_ENDING: &str = "\r\n";
+#[cfg(not(windows))]
+const LINE_ENDING: &str = "\n";
 
 fn main() {
     if let Err(err) = do_main() {
@@ -30,103 +38,71 @@ fn main() {
 }
 
 fn do_main() -> anyhow::Result<()> {
+    let cache_dir = PathBuf::from(CACHE_DIR);
+    fs::create_dir_all(&cache_dir)?;
+
     let cli = Cli::parse();
 
     match cli.command {
-        Command::New(command) => make_new_profile(command),
+        Command::New(command) => make_new_profile(command, cache_dir),
     }
-}
-
-fn make_new_profile(command: NewCommand) -> anyhow::Result<()> {
-    let profile_path = PathBuf::from(command.name);
-    if let Err(err) = std::fs::create_dir(&profile_path) {
-        if err.kind() == io::ErrorKind::AlreadyExists {
-            bail!("a profile with that name already exists");
-        }
-        return Err(err.into());
-    }
-
-    let cache_dir = PathBuf::from(CACHE_DIR);
-    std::fs::create_dir_all(&cache_dir)?;
-
-    let client = make_client()?;
-
-    eprintln!("fetching minecraft versions");
-    let manifest = Manifest::download(&client)?;
-
-    let version = command.version.unwrap_or(manifest.latest.release);
-    let Some(manifest_version) = manifest.versions.into_iter().find(|ver| ver.id == version) else {
-        bail!("no such version: {version}");
-    };
-
-    eprintln!("fetching metadata for version {version}");
-    let full_version =
-        manifest_version.download(&client, &cache_dir.join(format!("{version}.json")))?;
-
-    let java_candidate = if let Some(java_exe) = command.custom_java_exe {
-        let java_candidate = create_java_candidate_for_path(java_exe, &mut None)?;
-        if !command.skip_java_check
-            && java_candidate.version.major < full_version.java_version.major_version
-        {
-            bail!(
-                "specified java is not compatible with {version}, need at least java {}",
-                full_version.java_version.major_version
-            );
-        }
-        java_candidate
-    } else {
-        eprintln!("searching for java versions");
-        let mut java_candidates = find_java_candidates()?;
-        if !command.skip_java_check {
-            java_candidates.retain(|candidate| {
-                candidate.version.major >= full_version.java_version.major_version
-            });
-        }
-
-        // sort by major version ascending (to most closely match the required java version), and then by version descending, to prioritize the latest of each major version.
-        // also put the versions that are too old at the end
-        java_candidates.sort_by(|candidate1, candidate2| {
-            let candidate1_old = candidate1.version.major < full_version.java_version.major_version;
-            let candidate2_old = candidate2.version.major < full_version.java_version.major_version;
-            let cmp = candidate1_old.cmp(&candidate2_old);
-            if cmp != Ordering::Equal {
-                return cmp;
-            }
-
-            let cmp = candidate1.version.major.cmp(&candidate2.version.major);
-            if cmp != Ordering::Equal {
-                return cmp;
-            }
-
-            candidate2.version.cmp(&candidate1.version)
-        });
-        let Some(java_candidate) =
-            cli::select_from_list(java_candidates, "select java executable")?
-        else {
-            bail!(
-                "could not find any java install compatible with {version}, need at least java {}",
-                full_version.java_version.major_version
-            );
-        };
-        java_candidate
-    };
-    if !command.skip_java_check
-        && java_candidate.version.major > full_version.java_version.major_version
-    {
-        eprintln!("warning: selected java version {} is newer than the recommended java version {}, which may cause issues", java_candidate.version, full_version.java_version.major_version);
-    }
-
-    eprintln!("downloading server jar");
-    let Some(server_download) = full_version.downloads.server else {
-        bail!("version {version} does not have a server download");
-    };
-    server_download.download(&client, &profile_path.join("server.jar"))?;
-
-    Ok(())
 }
 
 fn make_client() -> anyhow::Result<Client> {
     Ok(Client::builder()
         .user_agent(concat!(crate_name!(), " ", crate_version!()))
         .build()?)
+}
+
+fn link_or_copy(target: impl AsRef<Path>, link_name: impl AsRef<Path>) -> io::Result<()> {
+    let target = target.as_ref();
+    let link_name = link_name.as_ref();
+
+    #[cfg(windows)]
+    let result = match std::os::windows::fs::symlink_file(target, link_name) {
+        Err(err) if err.raw_os_error() == Some(1) || err.raw_os_error() == Some(1314) => {
+            // ERROR_INVALID_FUNCTION returned when filesystem doesn't support symlinks
+            // ERROR_PRIVILEGE_NOT_HELD returned when the program doesn't have permission to create symlinks
+            fs::copy(target, link_name).map(|_| ())
+        }
+        result => result,
+    };
+    #[cfg(unix)]
+    let result = match std::os::unix::fs::symlink(target, link_name) {
+        Err(err) if err.raw_os_error() == Some(1) => {
+            // EPERM returned when filesystem doesn't support symlinks,
+            // in contrast to EACCES for when the user is missing read or write perms (Rust translates both to PermissionDenied)
+            fs::copy(target, link_name).map(|_| ())
+        }
+        result => result,
+    };
+    #[cfg(not(any(windows, unix)))]
+    let result = fs::copy(target, link_name).map(|_| ());
+
+    result
+}
+
+fn is_not_found(err: &io::Error) -> bool {
+    if err.kind() == io::ErrorKind::NotFound {
+        return true;
+    }
+
+    // TODO: use ErrorKind::NotADirectory once it's stable
+
+    #[cfg(unix)]
+    let not_a_directory_error = Some(20);
+    #[cfg(windows)]
+    let not_a_directory_error = Some(267);
+    #[cfg(not(any(unix, windows)))]
+    let not_a_directory_error = None;
+
+    let Some(not_a_directory_error) = not_a_directory_error else {
+        return false;
+    };
+
+    let Some(raw_os_error) = err.raw_os_error() else {
+        return false;
+    };
+
+    raw_os_error == not_a_directory_error
 }

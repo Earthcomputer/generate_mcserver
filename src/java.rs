@@ -1,3 +1,4 @@
+use crate::is_not_found;
 use anyhow::{bail, Context};
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, VecDeque};
@@ -793,31 +794,6 @@ impl Display for JavaCandidate {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} ({})", self.path.display(), self.version)
     }
-}
-
-fn is_not_found(err: &io::Error) -> bool {
-    if err.kind() == io::ErrorKind::NotFound {
-        return true;
-    }
-
-    // TODO: use ErrorKind::NotADirectory once it's stable
-
-    #[cfg(unix)]
-    let not_a_directory_error = Some(20);
-    #[cfg(windows)]
-    let not_a_directory_error = Some(267);
-    #[cfg(not(any(unix, windows)))]
-    let not_a_directory_error = None;
-
-    let Some(not_a_directory_error) = not_a_directory_error else {
-        return false;
-    };
-
-    let Some(raw_os_error) = err.raw_os_error() else {
-        return false;
-    };
-
-    raw_os_error == not_a_directory_error
 }
 
 #[derive(Debug, PartialEq, Eq)]

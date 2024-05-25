@@ -1,5 +1,7 @@
+use crate::is_not_found;
 use anyhow::{bail, Context};
 use reqwest::blocking::Client;
+use reqwest::StatusCode;
 use serde::de::{Error, Unexpected};
 use serde::{Deserialize, Deserializer};
 use sha1::digest::Output;
@@ -20,8 +22,44 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    pub fn download(client: &Client) -> anyhow::Result<Manifest> {
-        Ok(client.get(MANIFEST_URL).send()?.json()?)
+    pub fn download(client: &Client, file: &Path, etag_file: &Path) -> anyhow::Result<Manifest> {
+        let etag = match fs::read(etag_file) {
+            Ok(etag) => Some(etag),
+            Err(err) if is_not_found(&err) => None,
+            Err(err) => return Err(err).with_context(|| etag_file.display().to_string()),
+        };
+
+        let mut request = client.get(MANIFEST_URL);
+        if let Some(etag) = etag {
+            request = request.header("If-None-Match", etag);
+        }
+
+        let response = request.send().context(MANIFEST_URL)?;
+
+        if response.status() == StatusCode::NOT_MODIFIED {
+            match File::open(file) {
+                Ok(cached_file) => {
+                    return serde_json::from_reader(cached_file)
+                        .with_context(|| file.display().to_string());
+                }
+                Err(err) if is_not_found(&err) => {}
+                Err(err) => return Err(err).with_context(|| file.display().to_string()),
+            }
+        }
+
+        let etag = response.headers().get("ETag").cloned();
+
+        let raw_json = response.bytes().context(MANIFEST_URL)?.to_vec();
+
+        fs::write(etag_file, "").with_context(|| etag_file.display().to_string())?;
+        fs::write(file, &raw_json).with_context(|| file.display().to_string())?;
+        let result = serde_json::from_slice(&raw_json).context(MANIFEST_URL)?;
+
+        if let Some(etag) = etag {
+            fs::write(etag_file, etag).with_context(|| etag_file.display().to_string())?;
+        }
+
+        Ok(result)
     }
 }
 
@@ -57,7 +95,7 @@ impl ManifestVersion {
             .send()
             .with_context(|| self.url.clone())?
             .bytes()
-            .with_context(|| format!("downloading from {} to {}", self.url, file.display()))?
+            .with_context(|| self.url.clone())?
             .to_vec();
         if Sha1::digest(&file_contents) != self.sha1.0 {
             bail!(
@@ -65,6 +103,8 @@ impl ManifestVersion {
                 self.url
             );
         }
+
+        fs::write(file, &file_contents)?;
 
         serde_json::from_slice(&file_contents).with_context(|| file.display().to_string())
     }
@@ -109,6 +149,7 @@ impl VersionDownload {
 
         let mut file = File::options()
             .create(true)
+            .truncate(true)
             .write(true)
             .open(path)
             .with_context(|| path.display().to_string())?;
@@ -149,7 +190,7 @@ impl<'de> Deserialize<'de> for Sha1String {
     where
         D: Deserializer<'de>,
     {
-        let str: &str = Deserialize::deserialize(deserializer)?;
+        let str: String = Deserialize::deserialize(deserializer)?;
         if str.len() != 40 {
             return Err(Error::invalid_length(
                 str.len(),

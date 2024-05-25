@@ -14,7 +14,7 @@ serde = { version = "1.0.202", features = ["derive"] }
 serde_json = "1.0.117"
 sha1 = "0.10.6"
 tempfile = "3.10.1"
-time = { version = "0.3.36", features = ["parsing", "serde"] }
+time = { version = "0.3.36", features = ["macros", "parsing", "serde"] }
 url = { version = "2.5.0", features = ["serde"] }
 
 [dev-dependencies]

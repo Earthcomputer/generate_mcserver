@@ -12,18 +12,26 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    /// Create a new instance
     New(NewCommand),
 }
 
 #[derive(Args, Debug)]
 pub struct NewCommand {
+    /// The name of the new instance
     pub name: String,
+    /// The Minecraft version of the new instance (defaults to latest stable)
     #[arg(short, long)]
     pub version: Option<String>,
+    /// An explicit path to the Java executable to use
     #[arg(short = 'j', long)]
     pub custom_java_exe: Option<PathBuf>,
+    /// Skip Java compatibility checks
     #[arg(long)]
     pub skip_java_check: bool,
+    /// Agree to the EULA. By adding this argument you agree to the Minecraft EULA as specified at https://aka.ms/MinecraftEULA.
+    #[arg(short, long)]
+    pub eula: bool,
 }
 
 pub fn select_from_list<T: Display>(mut list: Vec<T>, prompt: &str) -> io::Result<Option<T>> {
