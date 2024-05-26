@@ -1,10 +1,10 @@
 use crate::cli::NewCommand;
 use crate::java::{create_java_candidate_for_path, find_java_candidates};
 use crate::mojang::Manifest;
-use crate::{cli, link_or_copy, make_client, LINE_ENDING, RUN_SERVER_FILENAME};
+use crate::{cli, link_or_copy, make_client, LINE_ENDING, RUN_SERVER_FILENAME, copy_directory};
 use anyhow::{anyhow, bail, Context};
 use std::cmp::Ordering;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{fs, io};
 use time::macros::datetime;
 use time::OffsetDateTime;
@@ -158,6 +158,33 @@ pub fn make_new_profile(command: NewCommand, cache_dir: PathBuf) -> anyhow::Resu
         fs::write(&eula_path, format!("eula=true{}", LINE_ENDING))
             .with_context(|| eula_path.display().to_string())?;
     }
+
+    if command.config_template == Path::new("default-config-template")
+        && !command.config_template.exists()
+    {
+        // sync-chunk-writes is on by default but super slow on unix systems
+        #[cfg(unix)]
+        let default_server_properties = concat!(
+            "sync-chunk-writes=false\n",
+            include_str!("../../res/default-server.properties")
+        );
+        #[cfg(not(unix))]
+        let default_server_properties = include_str!("../../res/default-server.properties");
+
+        fs::create_dir(&command.config_template)
+            .with_context(|| command.config_template.display().to_string())?;
+        let properties_template_path = command.config_template.join("server.properties");
+        fs::write(&properties_template_path, default_server_properties)
+            .with_context(|| properties_template_path.display().to_string())?;
+    }
+
+    copy_directory(&command.config_template, &profile_path).with_context(|| {
+        format!(
+            "copying from {} to {}",
+            command.config_template.display(),
+            profile_path.display()
+        )
+    })?;
 
     Ok(())
 }

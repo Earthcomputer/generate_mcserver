@@ -20,7 +20,7 @@ pub enum Command {
 pub struct NewCommand {
     /// The name of the new instance
     pub name: String,
-    /// The Minecraft version of the new instance (defaults to latest stable)
+    /// The Minecraft version of the new instance [default: latest]
     #[arg(short, long)]
     pub version: Option<String>,
     /// An explicit path to the Java executable to use
@@ -32,6 +32,9 @@ pub struct NewCommand {
     /// Agree to the EULA. By adding this argument you agree to the Minecraft EULA as specified at https://aka.ms/MinecraftEULA.
     #[arg(short, long)]
     pub eula: bool,
+    /// The template directory to copy server configuration files from
+    #[arg(short = 't', long, default_value = "default-config-template")]
+    pub config_template: PathBuf,
 }
 
 pub fn select_from_list<T: Display>(mut list: Vec<T>, prompt: &str) -> io::Result<Option<T>> {

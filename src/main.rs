@@ -82,6 +82,32 @@ fn link_or_copy(target: impl AsRef<Path>, link_name: impl AsRef<Path>) -> io::Re
     result
 }
 
+fn copy_directory(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> io::Result<()> {
+    let src = src.as_ref();
+    let dst = dst.as_ref();
+
+    let entries = fs::read_dir(src)?;
+
+    if !dst.exists() {
+        fs::create_dir_all(dst)?;
+    }
+
+    for entry in entries {
+        let entry = entry?;
+
+        let src_entry_path = entry.path();
+        let dst_entry_path = dst.join(entry.file_name());
+
+        if src_entry_path.is_dir() {
+            copy_directory(src_entry_path, dst_entry_path)?;
+        } else {
+            fs::copy(src_entry_path, dst_entry_path)?;
+        }
+    }
+
+    Ok(())
+}
+
 fn is_not_found(err: &io::Error) -> bool {
     if err.kind() == io::ErrorKind::NotFound {
         return true;
