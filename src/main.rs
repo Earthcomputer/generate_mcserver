@@ -1,5 +1,5 @@
 use crate::cli::{Cli, Command};
-use crate::commands::new::make_new_profile;
+use crate::commands::new::make_new_instance;
 use clap::{crate_name, crate_version, Parser};
 use reqwest::blocking::Client;
 use std::path::{Path, PathBuf};
@@ -44,7 +44,7 @@ fn do_main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::New(command) => make_new_profile(command, cache_dir),
+        Command::New(command) => make_new_instance(command, cache_dir),
     }
 }
 
@@ -55,7 +55,8 @@ fn make_client() -> anyhow::Result<Client> {
 }
 
 fn link_or_copy(target: impl AsRef<Path>, link_name: impl AsRef<Path>) -> io::Result<()> {
-    let target = target.as_ref();
+    let target = fs::canonicalize(target)?;
+    let target = &target;
     let link_name = link_name.as_ref();
 
     #[cfg(windows)]

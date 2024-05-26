@@ -7,7 +7,7 @@ use serde::{Deserialize, Deserializer};
 use sha1::digest::Output;
 use sha1::{Digest, Sha1};
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::{fs, io};
 use time::OffsetDateTime;
@@ -134,11 +134,17 @@ pub struct VersionDownloads {
 #[derive(Debug, Deserialize)]
 pub struct VersionDownload {
     sha1: Sha1String,
+    pub size: u64,
     url: Url,
 }
 
 impl VersionDownload {
-    pub fn download(&self, client: &Client, path: &Path) -> anyhow::Result<()> {
+    pub fn download(
+        &self,
+        client: &Client,
+        path: &Path,
+        mut progress_listener: impl FnMut(u64),
+    ) -> anyhow::Result<()> {
         if let Ok(mut existing_file) = File::open(path) {
             let mut digest = Sha1::default();
             if io::copy(&mut existing_file, &mut digest).is_ok() && digest.finalize() == self.sha1.0
@@ -153,12 +159,27 @@ impl VersionDownload {
             .write(true)
             .open(path)
             .with_context(|| path.display().to_string())?;
-        client
+        let mut response = client
             .get(self.url.clone())
             .send()
-            .with_context(|| self.url.clone())?
-            .copy_to(&mut file)
-            .with_context(|| format!("downloading from {} to {}", self.url, path.display()))?;
+            .with_context(|| self.url.clone())?;
+        // .copy_to(&mut file)
+        // .with_context(|| format!("downloading from {} to {}", self.url, path.display()))?;
+        let mut downloaded = 0;
+        let mut buffer = [0; 8192];
+        loop {
+            let n = response
+                .read(&mut buffer)
+                .with_context(|| self.url.clone())?;
+            if n == 0 {
+                break;
+            }
+            file.write_all(&buffer[..n])
+                .with_context(|| path.display().to_string())?;
+            downloaded += n as u64;
+            progress_listener(downloaded);
+        }
+
         file.flush().with_context(|| path.display().to_string())?;
         drop(file);
 

@@ -3,6 +3,7 @@ use crate::java::{create_java_candidate_for_path, find_java_candidates};
 use crate::mojang::Manifest;
 use crate::{cli, copy_directory, link_or_copy, make_client, LINE_ENDING, RUN_SERVER_FILENAME};
 use anyhow::{anyhow, bail, Context};
+use indicatif::{ProgressBar, ProgressStyle};
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::fs::File;
@@ -17,10 +18,10 @@ const TIME_17W15A: OffsetDateTime = datetime!(2017-04-12 09:30:50 UTC);
 const TIME_1_17_PRE1: OffsetDateTime = datetime!(2021-05-27 09:39:21 UTC);
 const TIME_1_18_1_RC3: OffsetDateTime = datetime!(2021-12-10 03:36:38 UTC);
 
-pub fn make_new_profile(command: NewCommand, cache_dir: PathBuf) -> anyhow::Result<()> {
-    let profile_path = PathBuf::from(command.name);
-    if profile_path.exists() {
-        bail!("a profile with that name already exists");
+pub fn make_new_instance(command: NewCommand, cache_dir: PathBuf) -> anyhow::Result<()> {
+    let instance_path = PathBuf::from(command.name);
+    if instance_path.exists() {
+        bail!("an instance with that name already exists");
     }
 
     let client = make_client()?;
@@ -98,18 +99,28 @@ pub fn make_new_profile(command: NewCommand, cache_dir: PathBuf) -> anyhow::Resu
         eprintln!("warning: selected java version {} is newer than the recommended java version {}, which may cause issues", java_candidate.version, full_version.java_version.major_version);
     }
 
-    eprintln!("downloading server jar");
     let Some(server_download) = full_version.downloads.server else {
         bail!("version {version} does not have a server download");
     };
     let server_download_path = cache_dir.join("jars");
     fs::create_dir_all(&server_download_path)?;
     let server_jar_path = server_download_path.join(format!("{version}.jar"));
-    server_download.download(&client, &server_jar_path)?;
 
-    fs::create_dir(&profile_path)?;
+    let pb = ProgressBar::new(server_download.size).with_message("downloading server jar");
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{msg}\n{bar:40.cyan/blue} {bytes}/{total_bytes} ({eta})")
+            .unwrap()
+            .progress_chars("##-"),
+    );
+    server_download.download(&client, &server_jar_path, |progress| {
+        pb.set_position(progress)
+    })?;
+    pb.finish_with_message("downloaded server jar");
 
-    link_or_copy(server_jar_path, profile_path.join("server.jar"))?;
+    fs::create_dir(&instance_path)?;
+
+    link_or_copy(server_jar_path, instance_path.join("server.jar"))?;
 
     let mut start_server_command = format!(
         "{} ",
@@ -123,7 +134,7 @@ pub fn make_new_profile(command: NewCommand, cache_dir: PathBuf) -> anyhow::Resu
 
     if (TIME_13W39A..TIME_1_18_1_RC3).contains(&manifest_version.release_time) {
         if manifest_version.release_time < TIME_17W15A {
-            let log4j_config_path = profile_path.join("log4j2_17-111.xml");
+            let log4j_config_path = instance_path.join("log4j2_17-111.xml");
             fs::write(
                 &log4j_config_path,
                 include_str!("../../res/log4j2_17-111.xml"),
@@ -131,7 +142,7 @@ pub fn make_new_profile(command: NewCommand, cache_dir: PathBuf) -> anyhow::Resu
             .with_context(|| log4j_config_path.display().to_string())?;
             start_server_command.push_str("-Dlog4j.configurationFile=log4j2_17-111.xml ");
         } else if manifest_version.release_time < TIME_1_17_PRE1 {
-            let log4j_config_path = profile_path.join("log4j2_112-116.xml");
+            let log4j_config_path = instance_path.join("log4j2_112-116.xml");
             fs::write(
                 &log4j_config_path,
                 include_str!("../../res/log4j2_112-116.xml"),
@@ -146,7 +157,7 @@ pub fn make_new_profile(command: NewCommand, cache_dir: PathBuf) -> anyhow::Resu
     start_server_command.push_str("-jar server.jar nogui");
     start_server_command.push_str(LINE_ENDING);
 
-    let run_server_path = profile_path.join(RUN_SERVER_FILENAME);
+    let run_server_path = instance_path.join(RUN_SERVER_FILENAME);
     let mut open_options = File::options();
     open_options.create(true).truncate(true).write(true);
     #[cfg(unix)]
@@ -166,7 +177,7 @@ pub fn make_new_profile(command: NewCommand, cache_dir: PathBuf) -> anyhow::Resu
     }
 
     if eula {
-        let eula_path = profile_path.join("eula.txt");
+        let eula_path = instance_path.join("eula.txt");
         fs::write(&eula_path, format!("eula=true{}", LINE_ENDING))
             .with_context(|| eula_path.display().to_string())?;
     }
@@ -190,11 +201,11 @@ pub fn make_new_profile(command: NewCommand, cache_dir: PathBuf) -> anyhow::Resu
             .with_context(|| properties_template_path.display().to_string())?;
     }
 
-    copy_directory(&command.config_template, &profile_path).with_context(|| {
+    copy_directory(&command.config_template, &instance_path).with_context(|| {
         format!(
             "copying from {} to {}",
             command.config_template.display(),
-            profile_path.display()
+            instance_path.display()
         )
     })?;
 
