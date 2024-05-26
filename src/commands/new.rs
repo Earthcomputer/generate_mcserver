@@ -1,9 +1,12 @@
 use crate::cli::NewCommand;
 use crate::java::{create_java_candidate_for_path, find_java_candidates};
 use crate::mojang::Manifest;
-use crate::{cli, link_or_copy, make_client, LINE_ENDING, RUN_SERVER_FILENAME, copy_directory};
+use crate::{cli, copy_directory, link_or_copy, make_client, LINE_ENDING, RUN_SERVER_FILENAME};
 use anyhow::{anyhow, bail, Context};
+use std::borrow::Cow;
 use std::cmp::Ordering;
+use std::fs::File;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 use time::macros::datetime;
@@ -110,10 +113,12 @@ pub fn make_new_profile(command: NewCommand, cache_dir: PathBuf) -> anyhow::Resu
 
     let mut start_server_command = format!(
         "{} ",
-        java_candidate
-            .path
-            .to_str()
-            .ok_or_else(|| anyhow!("java path had invalid UTF-8 characters"))?
+        escape_executable_name(
+            java_candidate
+                .path
+                .to_str()
+                .ok_or_else(|| anyhow!("java path had invalid UTF-8 characters"))?
+        )
     );
 
     if (TIME_13W39A..TIME_1_18_1_RC3).contains(&manifest_version.release_time) {
@@ -142,7 +147,14 @@ pub fn make_new_profile(command: NewCommand, cache_dir: PathBuf) -> anyhow::Resu
     start_server_command.push_str(LINE_ENDING);
 
     let run_server_path = profile_path.join(RUN_SERVER_FILENAME);
-    fs::write(&run_server_path, start_server_command)
+    let mut open_options = File::options();
+    open_options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut open_options, 0o744);
+    open_options
+        .open(&run_server_path)
+        .with_context(|| run_server_path.display().to_string())?
+        .write_all(start_server_command.as_bytes())
         .with_context(|| run_server_path.display().to_string())?;
 
     let mut eula = command.eula;
@@ -187,4 +199,47 @@ pub fn make_new_profile(command: NewCommand, cache_dir: PathBuf) -> anyhow::Resu
     })?;
 
     Ok(())
+}
+
+#[cfg(windows)]
+fn escape_executable_name(exe_name: &str) -> Cow<str> {
+    fn char_needs_escape(c: char) -> bool {
+        if c.is_whitespace() {
+            return true;
+        }
+        !matches!(
+            c,
+            '%' | '^' | '&' | '<' | '>' | '|' | '\'' | '"' | '(' | ')'
+        )
+    }
+
+    if !exe_name.chars().any(char_needs_escape) {
+        return exe_name.into();
+    }
+
+    format!("\"{}\"", exe_name.replace('"', "\"\"").replace('%', "%%")).into()
+}
+
+#[cfg(not(windows))]
+fn escape_executable_name(exe_name: &str) -> Cow<str> {
+    fn char_needs_escape(index: usize, c: char) -> bool {
+        if c.is_whitespace() {
+            return true;
+        }
+        match c {
+            '!' | '"' | '#' | '$' | '&' | '\'' | '(' | ')' | '*' | ';' | '<' | '=' | '>' | '?'
+            | '[' | '\\' | ']' | '^' | '`' | '{' | '|' | '}' => true,
+            '~' => index != 0,
+            _ => false,
+        }
+    }
+
+    if !exe_name
+        .char_indices()
+        .any(|(index, c)| char_needs_escape(index, c))
+    {
+        return exe_name.into();
+    }
+
+    format!("'{}'", exe_name.replace('\'', "'\\''")).into()
 }
