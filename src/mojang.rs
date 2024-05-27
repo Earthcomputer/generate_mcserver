@@ -1,7 +1,6 @@
-use crate::is_not_found;
+use crate::{download_with_etag, JsonDeserializer};
 use anyhow::{bail, Context};
 use reqwest::blocking::Client;
-use reqwest::StatusCode;
 use serde::de::{Error, Unexpected};
 use serde::{Deserialize, Deserializer};
 use sha1::digest::Output;
@@ -23,43 +22,13 @@ pub struct Manifest {
 
 impl Manifest {
     pub fn download(client: &Client, file: &Path, etag_file: &Path) -> anyhow::Result<Manifest> {
-        let etag = match fs::read(etag_file) {
-            Ok(etag) => Some(etag),
-            Err(err) if is_not_found(&err) => None,
-            Err(err) => return Err(err).with_context(|| etag_file.display().to_string()),
-        };
-
-        let mut request = client.get(MANIFEST_URL);
-        if let Some(etag) = etag {
-            request = request.header("If-None-Match", etag);
-        }
-
-        let response = request.send().context(MANIFEST_URL)?;
-
-        if response.status() == StatusCode::NOT_MODIFIED {
-            match File::open(file) {
-                Ok(cached_file) => {
-                    return serde_json::from_reader(cached_file)
-                        .with_context(|| file.display().to_string());
-                }
-                Err(err) if is_not_found(&err) => {}
-                Err(err) => return Err(err).with_context(|| file.display().to_string()),
-            }
-        }
-
-        let etag = response.headers().get("ETag").cloned();
-
-        let raw_json = response.bytes().context(MANIFEST_URL)?.to_vec();
-
-        fs::write(etag_file, "").with_context(|| etag_file.display().to_string())?;
-        fs::write(file, &raw_json).with_context(|| file.display().to_string())?;
-        let result = serde_json::from_slice(&raw_json).context(MANIFEST_URL)?;
-
-        if let Some(etag) = etag {
-            fs::write(etag_file, etag).with_context(|| etag_file.display().to_string())?;
-        }
-
-        Ok(result)
+        download_with_etag(
+            client,
+            MANIFEST_URL,
+            file,
+            etag_file,
+            JsonDeserializer::new(),
+        )
     }
 }
 

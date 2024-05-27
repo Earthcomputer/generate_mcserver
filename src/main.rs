@@ -1,13 +1,21 @@
 use crate::cli::{Cli, Command};
 use crate::commands::new::make_new_instance;
+use anyhow::Context;
 use clap::{crate_name, crate_version, Parser};
 use reqwest::blocking::Client;
+use reqwest::{IntoUrl, StatusCode};
+use serde::de::DeserializeOwned;
+use std::fmt::Display;
+use std::fs::File;
+use std::io::{Cursor, Read};
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::{env, fs, io};
 
 mod cli;
 mod commands;
 mod java;
+mod mod_loader;
 mod mojang;
 
 const CACHE_DIR: &str = concat!(".", crate_name!(), "_cache");
@@ -42,6 +50,7 @@ fn do_main() -> anyhow::Result<()> {
     fs::create_dir_all(&cache_dir)?;
 
     let cli = Cli::parse();
+    cli.validate()?;
 
     match cli.command {
         Command::New(command) => make_new_instance(command, cache_dir),
@@ -150,4 +159,102 @@ fn is_not_found(err: &io::Error) -> bool {
     };
 
     raw_os_error == not_a_directory_error
+}
+
+pub fn download_with_etag<T>(
+    client: &Client,
+    url: impl IntoUrl + Copy + Display,
+    file: &Path,
+    etag_file: &Path,
+    deserializer: impl GenericDeserializer<T>,
+) -> anyhow::Result<T> {
+    let etag = match fs::read(etag_file) {
+        Ok(etag) => Some(etag),
+        Err(err) if is_not_found(&err) => None,
+        Err(err) => return Err(err).with_context(|| etag_file.display().to_string()),
+    };
+
+    let mut request = client.get(url);
+    if let Some(etag) = etag {
+        request = request.header("If-None-Match", etag);
+    }
+
+    let response = request.send().with_context(|| url.to_string())?;
+
+    if response.status() == StatusCode::NOT_MODIFIED {
+        match File::open(file) {
+            Ok(cached_file) => {
+                return deserializer
+                    .deserialize_reader(cached_file)
+                    .with_context(|| file.display().to_string());
+            }
+            Err(err) if is_not_found(&err) => {}
+            Err(err) => return Err(err).with_context(|| file.display().to_string()),
+        }
+    }
+
+    let etag = response.headers().get("ETag").cloned();
+
+    let raw_json = response.bytes().with_context(|| url.to_string())?.to_vec();
+
+    fs::write(etag_file, "").with_context(|| etag_file.display().to_string())?;
+    fs::write(file, &raw_json).with_context(|| file.display().to_string())?;
+    let result = deserializer
+        .deserialize_slice(&raw_json)
+        .with_context(|| file.display().to_string())?;
+
+    if let Some(etag) = etag {
+        fs::write(etag_file, etag).with_context(|| etag_file.display().to_string())?;
+    }
+
+    Ok(result)
+}
+
+pub trait GenericDeserializer<T> {
+    fn deserialize_slice(&self, data: &[u8]) -> anyhow::Result<T> {
+        self.deserialize_reader(Cursor::new(data))
+    }
+
+    fn deserialize_reader<R>(&self, data: R) -> anyhow::Result<T>
+    where
+        R: Read;
+}
+
+pub struct IgnoreDeserializer;
+
+impl GenericDeserializer<()> for IgnoreDeserializer {
+    fn deserialize_reader<R>(&self, _data: R) -> anyhow::Result<()>
+    where
+        R: Read,
+    {
+        Ok(())
+    }
+}
+
+pub struct JsonDeserializer<T> {
+    _phantom: PhantomData<T>,
+}
+
+impl<T> JsonDeserializer<T> {
+    fn new() -> JsonDeserializer<T> {
+        JsonDeserializer {
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<T> GenericDeserializer<T> for JsonDeserializer<T>
+where
+    T: DeserializeOwned,
+{
+    fn deserialize_slice(&self, data: &[u8]) -> anyhow::Result<T> {
+        Ok(serde_json::from_slice(data)?)
+    }
+
+    fn deserialize_reader<R>(&self, data: R) -> anyhow::Result<T>
+    where
+        R: Read,
+    {
+        Ok(serde_json::from_reader(data)?)
+    }
 }

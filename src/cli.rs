@@ -1,5 +1,9 @@
-use clap::{Args, Parser, Subcommand};
-use std::fmt::Display;
+use crate::commands::new::ServerInstallArgs;
+use crate::mod_loader::fabric::install_fabric;
+use crate::mod_loader::vanilla::install_vanilla;
+use anyhow::bail;
+use clap::{Args, Parser, Subcommand, ValueEnum};
+use std::fmt::{Display, Formatter};
 use std::io;
 use std::path::PathBuf;
 
@@ -10,10 +14,24 @@ pub struct Cli {
     pub command: Command,
 }
 
+impl Cli {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        self.command.validate()
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Create a new instance
     New(NewCommand),
+}
+
+impl Command {
+    fn validate(&self) -> anyhow::Result<()> {
+        match self {
+            Self::New(command) => command.validate(),
+        }
+    }
 }
 
 #[derive(Args, Debug)]
@@ -35,6 +53,53 @@ pub struct NewCommand {
     /// The template directory to copy server configuration files from
     #[arg(short = 't', long, default_value_os_t = crate::get_cache_dir().join("default-config-template"))]
     pub config_template: PathBuf,
+    /// Which mod loader to use for this server
+    #[arg(short, long, default_value = "vanilla")]
+    pub loader: ModLoader,
+    /// The Fabric loader version to use [default: latest]
+    #[arg(long)]
+    pub fabric_loader_version: Option<String>,
+}
+
+impl NewCommand {
+    fn validate(&self) -> anyhow::Result<()> {
+        if self.fabric_loader_version.is_some() && self.loader != ModLoader::Fabric {
+            bail!("Fabric loader version specified but the loader isn't Fabric");
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(ValueEnum, Debug, Copy, Clone, PartialEq, Eq)]
+pub enum ModLoader {
+    Vanilla,
+    Fabric,
+}
+
+impl ModLoader {
+    pub fn minimum_java_version(&self) -> u32 {
+        match self {
+            Self::Vanilla => 5,
+            Self::Fabric => 8,
+        }
+    }
+
+    pub fn install(&self, args: ServerInstallArgs<'_>) -> anyhow::Result<()> {
+        match self {
+            Self::Vanilla => install_vanilla(args),
+            Self::Fabric => install_fabric(args),
+        }
+    }
+}
+
+impl Display for ModLoader {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Vanilla => "vanilla",
+            Self::Fabric => "fabric",
+        })
+    }
 }
 
 pub fn select_from_list<T: Display>(mut list: Vec<T>, prompt: &str) -> io::Result<Option<T>> {
