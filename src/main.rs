@@ -3,7 +3,7 @@ use crate::commands::new::make_new_instance;
 use clap::{crate_name, crate_version, Parser};
 use reqwest::blocking::Client;
 use std::path::{Path, PathBuf};
-use std::{fs, io};
+use std::{env, fs, io};
 
 mod cli;
 mod commands;
@@ -24,9 +24,9 @@ const LINE_ENDING: &str = "\n";
 
 fn main() {
     if let Err(err) = do_main() {
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "dev")]
         eprintln!("{} error: {:#?}", crate_name!(), err);
-        #[cfg(not(debug_assertions))]
+        #[cfg(not(feature = "dev"))]
         {
             let mut chain = err.chain();
             eprintln!("{} error: {}", crate_name!(), chain.next().unwrap());
@@ -38,7 +38,15 @@ fn main() {
 }
 
 fn do_main() -> anyhow::Result<()> {
-    let cache_dir = PathBuf::from(CACHE_DIR);
+    #[cfg(feature = "dev")]
+    let cache_dir: PathBuf = PathBuf::from(CACHE_DIR);
+    #[cfg(all(not(feature = "dev"), target_os = "windows"))]
+    let cache_dir: PathBuf = env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home::home_dir().unwrap_or_default())
+        .join(CACHE_DIR);
+    #[cfg(all(not(feature = "dev"), not(target_os = "windows")))]
+    let cache_dir: PathBuf = home::home_dir().unwrap_or_default().join(CACHE_DIR);
     fs::create_dir_all(&cache_dir)?;
 
     let cli = Cli::parse();
