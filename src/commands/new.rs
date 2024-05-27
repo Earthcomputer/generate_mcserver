@@ -8,7 +8,7 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::fs::File;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::{fs, io};
 use time::macros::datetime;
 use time::OffsetDateTime;
@@ -182,7 +182,7 @@ pub fn make_new_instance(command: NewCommand, cache_dir: PathBuf) -> anyhow::Res
             .with_context(|| eula_path.display().to_string())?;
     }
 
-    if command.config_template == Path::new("default-config-template")
+    if command.config_template == cache_dir.join("default-config-template")
         && !command.config_template.exists()
     {
         // sync-chunk-writes is on by default but super slow on unix systems

@@ -10,7 +10,7 @@ mod commands;
 mod java;
 mod mojang;
 
-const CACHE_DIR: &str = ".cache";
+const CACHE_DIR: &str = concat!(".", crate_name!(), "_cache");
 
 #[cfg(target_os = "windows")]
 const RUN_SERVER_FILENAME: &str = "run_server.bat";
@@ -38,15 +38,7 @@ fn main() {
 }
 
 fn do_main() -> anyhow::Result<()> {
-    #[cfg(feature = "dev")]
-    let cache_dir: PathBuf = PathBuf::from(CACHE_DIR);
-    #[cfg(all(not(feature = "dev"), target_os = "windows"))]
-    let cache_dir: PathBuf = env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home::home_dir().unwrap_or_default())
-        .join(CACHE_DIR);
-    #[cfg(all(not(feature = "dev"), not(target_os = "windows")))]
-    let cache_dir: PathBuf = home::home_dir().unwrap_or_default().join(CACHE_DIR);
+    let cache_dir = get_cache_dir();
     fs::create_dir_all(&cache_dir)?;
 
     let cli = Cli::parse();
@@ -60,6 +52,24 @@ fn make_client() -> anyhow::Result<Client> {
     Ok(Client::builder()
         .user_agent(concat!(crate_name!(), " ", crate_version!()))
         .build()?)
+}
+
+#[cfg(feature = "dev")]
+fn get_cache_dir() -> PathBuf {
+    PathBuf::from(CACHE_DIR)
+}
+
+#[cfg(all(not(feature = "dev"), target_os = "windows"))]
+fn get_cache_dir() -> PathBuf {
+    env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home::home_dir().unwrap_or_default())
+        .join(CACHE_DIR)
+}
+
+#[cfg(all(not(feature = "dev"), not(target_os = "windows")))]
+fn get_cache_dir() -> PathBuf {
+    home::home_dir().unwrap_or_default().join(CACHE_DIR)
 }
 
 fn link_or_copy(target: impl AsRef<Path>, link_name: impl AsRef<Path>) -> io::Result<()> {

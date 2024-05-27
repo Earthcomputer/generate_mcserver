@@ -33,7 +33,7 @@ pub struct NewCommand {
     #[arg(short, long)]
     pub eula: bool,
     /// The template directory to copy server configuration files from
-    #[arg(short = 't', long, default_value = "default-config-template")]
+    #[arg(short = 't', long, default_value_os_t = crate::get_cache_dir().join("default-config-template"))]
     pub config_template: PathBuf,
 }
 
