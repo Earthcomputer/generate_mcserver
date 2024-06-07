@@ -1,14 +1,11 @@
-use crate::{download_with_etag, JsonDeserializer};
+use crate::ioutil::{JsonDeserializer, Sha1String};
+use crate::{ioutil, ContextExt};
 use anyhow::{bail, Context};
 use reqwest::blocking::Client;
-use serde::de::{Error, Unexpected};
-use serde::{Deserialize, Deserializer};
-use sha1::digest::Output;
+use serde::Deserialize;
 use sha1::{Digest, Sha1};
-use std::fs::File;
-use std::io::{Read, Write};
+use std::fs;
 use std::path::Path;
-use std::{fs, io};
 use time::OffsetDateTime;
 use url::Url;
 
@@ -21,14 +18,8 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    pub fn download(client: &Client, file: &Path, etag_file: &Path) -> anyhow::Result<Manifest> {
-        download_with_etag(
-            client,
-            MANIFEST_URL,
-            file,
-            etag_file,
-            JsonDeserializer::new(),
-        )
+    pub fn download(client: &Client, file: &Path) -> anyhow::Result<Manifest> {
+        ioutil::download_with_etag(client, MANIFEST_URL, file, JsonDeserializer::new())
     }
 }
 
@@ -53,9 +44,8 @@ pub struct ManifestVersion {
 impl ManifestVersion {
     pub fn download(&self, client: &Client, file: &Path) -> anyhow::Result<Version> {
         if let Ok(file_contents) = fs::read(file) {
-            if Sha1::digest(&file_contents) == self.sha1.0 {
-                return serde_json::from_slice(&file_contents)
-                    .with_context(|| file.display().to_string());
+            if *Sha1::digest(&file_contents) == self.sha1.inner {
+                return serde_json::from_slice(&file_contents).with_path_context(file);
             }
         }
 
@@ -66,16 +56,16 @@ impl ManifestVersion {
             .bytes()
             .with_context(|| self.url.clone())?
             .to_vec();
-        if Sha1::digest(&file_contents) != self.sha1.0 {
+        if *Sha1::digest(&file_contents) != self.sha1.inner {
             bail!(
-                "file downloaded from {} did not match the expected sha1 hash",
+                "file downloaded from {} did not match the expected hash",
                 self.url
             );
         }
 
         fs::write(file, &file_contents)?;
 
-        serde_json::from_slice(&file_contents).with_context(|| file.display().to_string())
+        serde_json::from_slice(&file_contents).with_path_context(file)
     }
 }
 
@@ -112,57 +102,16 @@ impl VersionDownload {
         &self,
         client: &Client,
         path: &Path,
-        mut progress_listener: impl FnMut(u64),
+        progress_listener: impl FnMut(u64),
     ) -> anyhow::Result<()> {
-        if let Ok(mut existing_file) = File::open(path) {
-            let mut digest = Sha1::default();
-            if io::copy(&mut existing_file, &mut digest).is_ok() && digest.finalize() == self.sha1.0
-            {
-                return Ok(());
-            }
-        }
-
-        let mut file = File::options()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(path)
-            .with_context(|| path.display().to_string())?;
-        let mut response = client
-            .get(self.url.clone())
-            .send()
-            .with_context(|| self.url.clone())?;
-        // .copy_to(&mut file)
-        // .with_context(|| format!("downloading from {} to {}", self.url, path.display()))?;
-        let mut downloaded = 0;
-        let mut buffer = [0; 8192];
-        loop {
-            let n = response
-                .read(&mut buffer)
-                .with_context(|| self.url.clone())?;
-            if n == 0 {
-                break;
-            }
-            file.write_all(&buffer[..n])
-                .with_context(|| path.display().to_string())?;
-            downloaded += n as u64;
-            progress_listener(downloaded);
-        }
-
-        file.flush().with_context(|| path.display().to_string())?;
-        drop(file);
-
-        let mut file = File::open(path).with_context(|| path.display().to_string())?;
-        let mut digest = Sha1::default();
-        io::copy(&mut file, &mut digest).with_context(|| path.display().to_string())?;
-        if digest.finalize() != self.sha1.0 {
-            bail!(
-                "file downloaded from {} did not match the expected sha1 hash",
-                self.url
-            );
-        }
-
-        Ok(())
+        ioutil::download_large_with_hash::<Sha1, _>(
+            client,
+            self.url.clone(),
+            path,
+            &self.sha1.inner,
+            |_| {},
+            progress_listener,
+        )
     }
 }
 
@@ -170,45 +119,4 @@ impl VersionDownload {
 #[serde(rename_all = "camelCase")]
 pub struct JavaVersion {
     pub major_version: u32,
-}
-
-#[derive(Debug)]
-struct Sha1String(Output<Sha1>);
-
-impl<'de> Deserialize<'de> for Sha1String {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let str: String = Deserialize::deserialize(deserializer)?;
-        if str.len() != 40 {
-            return Err(Error::invalid_length(
-                str.len(),
-                &"sha1 string of length 40",
-            ));
-        }
-
-        let mut result = Output::<Sha1>::default();
-
-        fn digit_value<'de, D>(char: u8) -> Result<u8, D::Error>
-        where
-            D: Deserializer<'de>,
-        {
-            match char {
-                b'0'..=b'9' => Ok(char - b'0'),
-                b'A'..=b'F' => Ok(char - b'A' + 10),
-                b'a'..=b'f' => Ok(char - b'a' + 10),
-                _ => Err(Error::invalid_value(
-                    Unexpected::Char(char as char),
-                    &"sha1 string",
-                )),
-            }
-        }
-
-        for (i, chunk) in str.as_bytes().chunks_exact(2).enumerate() {
-            result[i] = 16 * digit_value::<D>(chunk[0])? + digit_value::<D>(chunk[1])?;
-        }
-
-        Ok(Sha1String(result))
-    }
 }

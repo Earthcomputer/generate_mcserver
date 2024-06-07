@@ -1,12 +1,11 @@
 use crate::cli::NewCommand;
 use crate::java::{create_java_candidate_for_path, find_java_candidates, JavaCandidate};
 use crate::mojang::{Manifest, ManifestVersion, Version};
-use crate::{cli, copy_directory, make_client, RUN_SERVER_FILENAME};
+use crate::{cli, ioutil, make_client, ContextExt, RUN_SERVER_FILENAME};
 use anyhow::{anyhow, bail, Context};
 use reqwest::blocking::Client;
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::fmt::Display;
 use std::fs;
 use std::fs::File;
 use std::io::Write;
@@ -21,11 +20,7 @@ pub fn make_new_instance(command: NewCommand, cache_dir: PathBuf) -> anyhow::Res
     let client = make_client()?;
 
     eprintln!("fetching minecraft versions");
-    let manifest = Manifest::download(
-        &client,
-        &cache_dir.join("version_manifest.json"),
-        &cache_dir.join("version_manifest.json.etag"),
-    )?;
+    let manifest = Manifest::download(&client, &cache_dir.join("version_manifest.json"))?;
 
     let version = command
         .version
@@ -43,17 +38,14 @@ pub fn make_new_instance(command: NewCommand, cache_dir: PathBuf) -> anyhow::Res
         &version_metadata_path.join(format!("{version}.json")),
     )?;
 
-    let (required_java_version, required_java_version_reason): (_, &dyn Display) =
-        if command.loader.minimum_java_version() > full_version.java_version.major_version {
-            (command.loader.minimum_java_version(), &command.loader)
-        } else {
-            (full_version.java_version.major_version, &version)
-        };
+    let required_java_version = command
+        .loader
+        .minimum_java_version(&manifest_version, &full_version);
 
     let java_candidate = if let Some(java_exe) = command.custom_java_exe.clone() {
         let java_candidate = create_java_candidate_for_path(java_exe, &mut None)?;
         if !command.skip_java_check && java_candidate.version.major < required_java_version {
-            bail!("specified java is not compatible with {required_java_version_reason}, need at least java {required_java_version}");
+            bail!("specified java is not compatible with {} {}, need at least java {required_java_version}", command.loader, version);
         }
         java_candidate
     } else {
@@ -83,7 +75,7 @@ pub fn make_new_instance(command: NewCommand, cache_dir: PathBuf) -> anyhow::Res
         let Some(java_candidate) =
             cli::select_from_list(java_candidates, "select java executable")?
         else {
-            bail!("could not find any java install compatible with {required_java_version_reason}, need at least java {required_java_version}");
+            bail!("could not find any java install compatible with {} {}, need at least java {required_java_version}", command.loader, version);
         };
         java_candidate
     };
@@ -114,14 +106,13 @@ pub fn make_new_instance(command: NewCommand, cache_dir: PathBuf) -> anyhow::Res
         #[cfg(not(unix))]
         let default_server_properties = include_str!("../../res/default-server.properties");
 
-        fs::create_dir(&command.config_template)
-            .with_context(|| command.config_template.display().to_string())?;
+        fs::create_dir(&command.config_template).with_path_context(&command.config_template)?;
         let properties_template_path = command.config_template.join("server.properties");
         fs::write(&properties_template_path, default_server_properties)
-            .with_context(|| properties_template_path.display().to_string())?;
+            .with_path_context(&properties_template_path)?;
     }
 
-    copy_directory(&command.config_template, &instance_path).with_context(|| {
+    ioutil::copy_directory(&command.config_template, &instance_path).with_context(|| {
         format!(
             "copying from {} to {}",
             command.config_template.display(),
@@ -205,9 +196,9 @@ pub fn write_run_server_file(args: &ServerInstallArgs<'_>, command: &str) -> any
     std::os::unix::fs::OpenOptionsExt::mode(&mut open_options, 0o744);
     open_options
         .open(&run_server_path)
-        .with_context(|| run_server_path.display().to_string())?
+        .with_path_context(&run_server_path)?
         .write_all(command.as_bytes())
-        .with_context(|| run_server_path.display().to_string())?;
+        .with_path_context(&run_server_path)?;
 
     Ok(())
 }

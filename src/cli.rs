@@ -1,9 +1,7 @@
-use crate::commands::new::ServerInstallArgs;
-use crate::mod_loader::fabric::install_fabric;
-use crate::mod_loader::vanilla::install_vanilla;
+use crate::mod_loader::ModLoader;
 use anyhow::bail;
-use clap::{Args, Parser, Subcommand, ValueEnum};
-use std::fmt::{Display, Formatter};
+use clap::{Args, Parser, Subcommand};
+use std::fmt::Display;
 use std::io;
 use std::path::PathBuf;
 
@@ -56,9 +54,12 @@ pub struct NewCommand {
     /// Which mod loader to use for this server
     #[arg(short, long, default_value = "vanilla")]
     pub loader: ModLoader,
-    /// The Fabric loader version to use [default: latest]
+    /// The Fabric loader version to use (if using Fabric) [default: latest]
     #[arg(long)]
     pub fabric_loader_version: Option<String>,
+    /// The Paper build to use (if using Paper) [default: latest]
+    #[arg(long)]
+    pub paper_build: Option<u32>,
 }
 
 impl NewCommand {
@@ -67,38 +68,11 @@ impl NewCommand {
             bail!("Fabric loader version specified but the loader isn't Fabric");
         }
 
+        if self.paper_build.is_some() && self.loader != ModLoader::Paper {
+            bail!("Paper build specified but the loader isn't Paper");
+        }
+
         Ok(())
-    }
-}
-
-#[derive(ValueEnum, Debug, Copy, Clone, PartialEq, Eq)]
-pub enum ModLoader {
-    Vanilla,
-    Fabric,
-}
-
-impl ModLoader {
-    pub fn minimum_java_version(&self) -> u32 {
-        match self {
-            Self::Vanilla => 5,
-            Self::Fabric => 8,
-        }
-    }
-
-    pub fn install(&self, args: ServerInstallArgs<'_>) -> anyhow::Result<()> {
-        match self {
-            Self::Vanilla => install_vanilla(args),
-            Self::Fabric => install_fabric(args),
-        }
-    }
-}
-
-impl Display for ModLoader {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Vanilla => "vanilla",
-            Self::Fabric => "fabric",
-        })
     }
 }
 

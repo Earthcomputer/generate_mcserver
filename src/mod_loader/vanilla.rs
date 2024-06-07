@@ -1,7 +1,6 @@
 use crate::commands::new::{write_run_server_file, ServerInstallArgs};
-use crate::{link_or_copy, LINE_ENDING};
+use crate::{ioutil, make_progress_bar, ContextExt, LINE_ENDING};
 use anyhow::{bail, Context};
-use indicatif::{ProgressBar, ProgressStyle};
 use std::path::PathBuf;
 use std::{fs, io};
 use time::macros::datetime;
@@ -15,10 +14,10 @@ const TIME_1_18_1_RC3: OffsetDateTime = datetime!(2021-12-10 03:36:38 UTC);
 pub fn install_vanilla(args: ServerInstallArgs<'_>) -> anyhow::Result<()> {
     let server_jar_path = download_vanilla_server(&args)?;
 
-    fs::create_dir(args.instance_path).with_context(|| args.instance_path.display().to_string())?;
+    fs::create_dir_all(args.instance_path).with_path_context(args.instance_path)?;
 
     let link_path = args.instance_path.join("server.jar");
-    link_or_copy(&server_jar_path, &link_path).with_context(|| {
+    ioutil::link_or_copy(&server_jar_path, &link_path).with_context(|| {
         format!(
             "linking {} to {}",
             link_path.display(),
@@ -51,13 +50,7 @@ pub fn download_vanilla_server(args: &ServerInstallArgs<'_>) -> anyhow::Result<P
     fs::create_dir_all(&server_download_path)?;
     let server_jar_path = server_download_path.join(format!("{}.jar", args.version_name));
 
-    let pb = ProgressBar::new(server_download.size).with_message("downloading server jar");
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{msg}\n{bar:40.cyan/blue} {bytes}/{total_bytes} ({eta})")
-            .unwrap()
-            .progress_chars("##-"),
-    );
+    let pb = make_progress_bar(server_download.size, "downloading server jar");
     server_download.download(args.client, &server_jar_path, |progress| {
         pb.set_position(progress)
     })?;
@@ -77,8 +70,7 @@ pub fn agree_to_eula(args: &ServerInstallArgs<'_>) -> anyhow::Result<()> {
 
     if eula {
         let eula_path = args.instance_path.join("eula.txt");
-        fs::write(&eula_path, format!("eula=true{}", LINE_ENDING))
-            .with_context(|| eula_path.display().to_string())?;
+        fs::write(&eula_path, format!("eula=true{}", LINE_ENDING)).with_path_context(&eula_path)?;
     }
 
     Ok(())
@@ -95,7 +87,7 @@ fn apply_vanilla_log4j_fix(
                 &log4j_config_path,
                 include_str!("../../res/log4j2_17-111.xml"),
             )
-            .with_context(|| log4j_config_path.display().to_string())?;
+            .with_path_context(&log4j_config_path)?;
             start_server_command.push_str("-Dlog4j.configurationFile=log4j2_17-111.xml ");
         } else if args.manifest_version.release_time < TIME_1_17_PRE1 {
             let log4j_config_path = args.instance_path.join("log4j2_112-116.xml");
@@ -103,7 +95,7 @@ fn apply_vanilla_log4j_fix(
                 &log4j_config_path,
                 include_str!("../../res/log4j2_112-116.xml"),
             )
-            .with_context(|| log4j_config_path.display().to_string())?;
+            .with_path_context(&log4j_config_path)?;
             start_server_command.push_str("-Dlog4j.configurationFile=log4j2_112-116.xml ");
         } else {
             start_server_command.push_str("-Dlog4j2.formatMsgNoLookups=true ");

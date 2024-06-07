@@ -1,4 +1,4 @@
-use crate::is_not_found;
+use crate::{ioutil, ContextExt};
 use anyhow::{bail, Context};
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, VecDeque};
@@ -542,7 +542,7 @@ fn find_platform_specific_java_candidates() -> anyhow::Result<Vec<PathBuf>> {
                 java_candidates.push(java.path().join("Contents/Commands/java"));
             }
         }
-        Err(err) if is_not_found(&err) => {}
+        Err(err) if ioutil::is_not_found(&err) => {}
         Err(err) => return Err(err).context(java_jvms_dir),
     }
 
@@ -563,13 +563,13 @@ fn find_platform_specific_java_candidates() -> anyhow::Result<Vec<PathBuf>> {
         match fs::read_dir(dir_path) {
             Ok(entries) => {
                 for entry in entries {
-                    let entry = entry.with_context(|| dir_path.display().to_string())?;
+                    let entry = entry.with_path_context(dir_path)?;
                     java_candidates.push(entry.path().join("jre/bin/java"));
                     java_candidates.push(entry.path().join("bin/java"));
                 }
             }
-            Err(err) if is_not_found(&err) => {}
-            Err(err) => return Err(err).with_context(|| dir_path.display().to_string()),
+            Err(err) if ioutil::is_not_found(&err) => {}
+            Err(err) => return Err(err).with_path_context(dir_path),
         }
         Ok(())
     };
@@ -618,8 +618,8 @@ fn find_java_paths() -> anyhow::Result<Vec<PathBuf>> {
     java_candidates
         .into_iter()
         .filter_map(|path| match fs::canonicalize(&path) {
-            Err(err) if is_not_found(&err) => None,
-            result => Some(result.with_context(|| path.display().to_string())),
+            Err(err) if ioutil::is_not_found(&err) => None,
+            result => Some(result.with_path_context(&path)),
         })
         .filter(|path| match path {
             Ok(path) => seen_candidates.insert(path.clone()),
@@ -667,9 +667,9 @@ fn get_minecraft_java_bundle() -> anyhow::Result<Vec<PathBuf>> {
         let entries = match fs::read_dir(&dir_path) {
             Ok(entries) => entries
                 .collect::<io::Result<Vec<_>>>()
-                .with_context(|| dir_path.display().to_string())?,
-            Err(err) if is_not_found(&err) => continue,
-            Err(err) => return Err(err).with_context(|| dir_path.display().to_string()),
+                .with_path_context(&dir_path)?,
+            Err(err) if ioutil::is_not_found(&err) => continue,
+            Err(err) => return Err(err).with_path_context(&dir_path),
         };
 
         let mut bin_found = false;
@@ -710,11 +710,11 @@ fn get_java_version_from_release_file(java_path: &Path) -> anyhow::Result<Option
     let release_path = parent.join("release");
     let release_file = match File::open(&release_path) {
         Ok(release_file) => release_file,
-        Err(err) if is_not_found(&err) => return Ok(None),
-        Err(err) => return Err(err).with_context(|| release_path.display().to_string()),
+        Err(err) if ioutil::is_not_found(&err) => return Ok(None),
+        Err(err) => return Err(err).with_path_context(&release_path),
     };
     for line in BufReader::new(release_file).lines() {
-        let line = line.with_context(|| release_path.display().to_string())?;
+        let line = line.with_path_context(&release_path)?;
         if let Some(version) = line
             .strip_prefix("JAVA_VERSION=\"")
             .and_then(|version| version.strip_suffix('"'))
