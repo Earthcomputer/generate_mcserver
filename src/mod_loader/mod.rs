@@ -2,8 +2,10 @@ use crate::commands::new::ServerInstallArgs;
 use crate::mod_loader::fabric::install_fabric;
 use crate::mod_loader::paper::install_paper;
 use crate::mod_loader::vanilla::install_vanilla;
+use crate::mod_provider::ModProvider;
 use crate::mojang::{ManifestVersion, Version};
 use clap::ValueEnum;
+use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use time::macros::datetime;
 
@@ -11,7 +13,8 @@ pub mod fabric;
 pub mod paper;
 pub mod vanilla;
 
-#[derive(ValueEnum, Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ModLoader {
     Vanilla,
     Fabric,
@@ -19,6 +22,22 @@ pub enum ModLoader {
 }
 
 impl ModLoader {
+    pub fn default_mod_provider(&self) -> Option<ModProvider> {
+        match self {
+            Self::Vanilla => None,
+            Self::Fabric => Some(ModProvider::Modrinth),
+            Self::Paper => Some(ModProvider::Hangar),
+        }
+    }
+
+    pub fn mods_folder(&self) -> Option<&'static str> {
+        match self {
+            Self::Vanilla => None,
+            Self::Fabric => Some("mods"),
+            Self::Paper => Some("plugins"),
+        }
+    }
+
     pub fn minimum_java_version(
         &self,
         manifest_version: &ManifestVersion,

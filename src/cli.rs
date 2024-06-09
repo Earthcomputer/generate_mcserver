@@ -1,4 +1,5 @@
 use crate::mod_loader::ModLoader;
+use crate::mod_provider::ModProvider;
 use anyhow::bail;
 use clap::{Args, Parser, Subcommand};
 use std::fmt::Display;
@@ -20,6 +21,8 @@ impl Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    /// Add a mod or plugin to this instance
+    Add(AddCommand),
     /// Create a new instance
     New(NewCommand),
 }
@@ -27,8 +30,32 @@ pub enum Command {
 impl Command {
     fn validate(&self) -> anyhow::Result<()> {
         match self {
+            Self::Add(command) => command.validate(),
             Self::New(command) => command.validate(),
         }
+    }
+}
+
+#[derive(Args, Debug)]
+pub struct AddCommand {
+    /// The name of the mod or plugin to add
+    pub name: String,
+    /// The version of the mod or plugin to add [default: latest for Minecraft version]
+    pub version: Option<String>,
+    /// The provider for this mod (where it's downloaded from)
+    #[arg(short, long)]
+    pub provider: Option<ModProvider>,
+    /// Ignore mismatching minecraft version
+    #[arg(short = 'V', long)]
+    pub skip_version_check: bool,
+    /// Always search for the mod rather than going by exact ID
+    #[arg(short = 's', long)]
+    pub force_search: bool,
+}
+
+impl AddCommand {
+    fn validate(&self) -> anyhow::Result<()> {
+        Ok(())
     }
 }
 

@@ -1,11 +1,10 @@
+use crate::hashing::HashAlgorithm;
 use crate::ContextExt;
 use anyhow::{anyhow, bail, Context};
 use reqwest::blocking::Client;
 use reqwest::{IntoUrl, StatusCode};
-use serde::de::{DeserializeOwned, Error, Expected, Unexpected};
-use serde::{Deserialize, Deserializer};
-use sha1::Digest;
-use std::fmt::{Display, Formatter};
+use serde::de::DeserializeOwned;
+use std::fmt::Display;
 use std::fs::File;
 use std::io::{Cursor, Read, Write};
 use std::marker::PhantomData;
@@ -127,6 +126,12 @@ pub fn download_with_etag<T>(
             Err(err) if is_not_found(&err) => {}
             Err(err) => return Err(err).with_path_context(file),
         }
+    } else if !response.status().is_success() {
+        bail!(
+            "request to {} returned status code {}",
+            url,
+            response.status()
+        );
     }
 
     let etag = response.headers().get("ETag").cloned();
@@ -146,26 +151,52 @@ pub fn download_with_etag<T>(
     Ok(result)
 }
 
-pub fn download_large_with_hash<H, U>(
+pub fn download_large_with_hash<U>(
     client: &Client,
     url: U,
     path: &Path,
+    algorithm: HashAlgorithm,
     expected_hash: &[u8],
     start_download: impl FnOnce(Option<u64>),
-    mut progress_listener: impl FnMut(u64),
+    progress_listener: impl FnMut(u64),
 ) -> anyhow::Result<()>
 where
-    H: Digest + Write,
     U: IntoUrl,
 {
     if let Ok(mut existing_file) = File::open(path) {
-        let mut digest = H::new();
-        if io::copy(&mut existing_file, &mut digest).is_ok() && *digest.finalize() == *expected_hash
+        let mut digest = algorithm.create_hasher();
+        if io::copy(&mut existing_file, &mut digest).is_ok() && &*digest.finalize() == expected_hash
         {
             return Ok(());
         }
     }
 
+    let url = url.into_url()?;
+    download_large(client, url.clone(), path, start_download, progress_listener)?;
+
+    let mut file = File::open(path).with_path_context(path)?;
+    let mut digest = algorithm.create_hasher();
+    io::copy(&mut file, &mut digest).with_path_context(path)?;
+    if &*digest.finalize() != expected_hash {
+        bail!(
+            "file downloaded from {} did not match the expected hash",
+            url
+        );
+    }
+
+    Ok(())
+}
+
+pub fn download_large<U>(
+    client: &Client,
+    url: U,
+    path: &Path,
+    start_download: impl FnOnce(Option<u64>),
+    mut progress_listener: impl FnMut(u64),
+) -> anyhow::Result<()>
+where
+    U: IntoUrl,
+{
     let url = url.into_url()?;
 
     let mut file = File::options()
@@ -192,17 +223,6 @@ where
     }
 
     file.flush().with_path_context(path)?;
-    drop(file);
-
-    let mut file = File::open(path).with_path_context(path)?;
-    let mut digest = H::new();
-    io::copy(&mut file, &mut digest).with_path_context(path)?;
-    if *digest.finalize() != *expected_hash {
-        bail!(
-            "file downloaded from {} did not match the expected hash",
-            url
-        );
-    }
 
     Ok(())
 }
@@ -253,55 +273,5 @@ where
         R: Read,
     {
         Ok(serde_json::from_reader(data)?)
-    }
-}
-
-#[derive(Debug)]
-pub struct HexString<const N: usize> {
-    pub inner: [u8; N],
-}
-
-pub type Sha1String = HexString<20>;
-pub type Sha2String = HexString<32>;
-
-impl<'de, const N: usize> Deserialize<'de> for HexString<N> {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let str: String = Deserialize::deserialize(deserializer)?;
-        if str.len() != N * 2 {
-            struct ExpectedSize(usize);
-            impl Expected for ExpectedSize {
-                fn fmt(&self, formatter: &mut Formatter) -> std::fmt::Result {
-                    write!(formatter, "hex string of length {}", self.0)
-                }
-            }
-
-            return Err(Error::invalid_length(str.len(), &ExpectedSize(N * 2)));
-        }
-
-        let mut result = [0; N];
-
-        fn digit_value<'de, D>(char: u8) -> Result<u8, D::Error>
-        where
-            D: Deserializer<'de>,
-        {
-            match char {
-                b'0'..=b'9' => Ok(char - b'0'),
-                b'A'..=b'F' => Ok(char - b'A' + 10),
-                b'a'..=b'f' => Ok(char - b'a' + 10),
-                _ => Err(Error::invalid_value(
-                    Unexpected::Char(char as char),
-                    &"sha1 string",
-                )),
-            }
-        }
-
-        for (i, chunk) in str.as_bytes().chunks_exact(2).enumerate() {
-            result[i] = 16 * digit_value::<D>(chunk[0])? + digit_value::<D>(chunk[1])?;
-        }
-
-        Ok(HexString { inner: result })
     }
 }

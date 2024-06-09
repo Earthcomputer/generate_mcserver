@@ -1,5 +1,6 @@
 [package]
 name = "generate_mcserver"
+authors = ["Earthcomputer"]
 version = "0.1.0"
 edition = "2021"
 

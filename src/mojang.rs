@@ -1,4 +1,5 @@
-use crate::ioutil::{JsonDeserializer, Sha1String};
+use crate::hashing::{HashAlgorithm, Sha1String};
+use crate::ioutil::JsonDeserializer;
 use crate::{ioutil, ContextExt};
 use anyhow::{bail, Context};
 use reqwest::blocking::Client;
@@ -49,13 +50,18 @@ impl ManifestVersion {
             }
         }
 
-        let file_contents = client
+        let response = client
             .get(self.url.clone())
             .send()
-            .with_context(|| self.url.clone())?
-            .bytes()
-            .with_context(|| self.url.clone())?
-            .to_vec();
+            .with_context(|| self.url.clone())?;
+        if !response.status().is_success() {
+            bail!(
+                "request to {} returned status code {}",
+                self.url,
+                response.status()
+            );
+        }
+        let file_contents = response.bytes().with_context(|| self.url.clone())?.to_vec();
         if *Sha1::digest(&file_contents) != self.sha1.inner {
             bail!(
                 "file downloaded from {} did not match the expected hash",
@@ -76,6 +82,8 @@ pub enum VersionType {
     Snapshot,
     OldBeta,
     OldAlpha,
+    #[serde(other)]
+    Other,
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,10 +112,11 @@ impl VersionDownload {
         path: &Path,
         progress_listener: impl FnMut(u64),
     ) -> anyhow::Result<()> {
-        ioutil::download_large_with_hash::<Sha1, _>(
+        ioutil::download_large_with_hash(
             client,
             self.url.clone(),
             path,
+            HashAlgorithm::Sha1,
             &self.sha1.inner,
             |_| {},
             progress_listener,

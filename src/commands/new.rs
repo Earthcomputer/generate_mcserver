@@ -1,4 +1,5 @@
 use crate::cli::NewCommand;
+use crate::instance::InstanceMetadata;
 use crate::java::{create_java_candidate_for_path, find_java_candidates, JavaCandidate};
 use crate::mojang::{Manifest, ManifestVersion, Version};
 use crate::{cli, ioutil, make_client, ContextExt, RUN_SERVER_FILENAME};
@@ -119,6 +120,8 @@ pub fn make_new_instance(command: NewCommand, cache_dir: PathBuf) -> anyhow::Res
             instance_path.display()
         )
     })?;
+
+    InstanceMetadata::new(command.loader, version).save(&instance_path)?;
 
     Ok(())
 }

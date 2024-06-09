@@ -1,17 +1,22 @@
 use crate::cli::{Cli, Command};
+use crate::commands::add::add_mod;
 use crate::commands::new::make_new_instance;
 use anyhow::Context;
 use clap::{crate_name, crate_version, Parser};
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::blocking::Client;
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::{env, fs};
 
 mod cli;
 mod commands;
+mod hashing;
+mod instance;
 mod ioutil;
 mod java;
 mod mod_loader;
+mod mod_provider;
 mod mojang;
 
 const CACHE_DIR: &str = concat!(".", crate_name!(), "_cache");
@@ -49,17 +54,25 @@ fn do_main() -> anyhow::Result<()> {
     cli.validate()?;
 
     match cli.command {
+        Command::Add(command) => add_mod(command, cache_dir),
         Command::New(command) => make_new_instance(command, cache_dir),
     }
 }
 
 fn make_client() -> anyhow::Result<Client> {
     Ok(Client::builder()
-        .user_agent(concat!(crate_name!(), " ", crate_version!()))
+        .user_agent(concat!(
+            crate_name!(),
+            " ",
+            crate_version!(),
+            " (",
+            env!("GIT_URL"),
+            ")"
+        ))
         .build()?)
 }
 
-fn make_progress_bar(len: u64, message: &'static str) -> ProgressBar {
+fn make_progress_bar(len: u64, message: impl Into<Cow<'static, str>>) -> ProgressBar {
     let pb = ProgressBar::new(len).with_message(message);
     pb.set_style(
         ProgressStyle::default_bar()

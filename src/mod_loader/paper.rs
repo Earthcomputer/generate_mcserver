@@ -1,10 +1,10 @@
 use crate::commands::new::{write_run_server_file, ServerInstallArgs};
-use crate::ioutil::{JsonDeserializer, Sha2String};
+use crate::hashing::{HashAlgorithm, Sha2String};
+use crate::ioutil::JsonDeserializer;
 use crate::mod_loader::vanilla::{agree_to_eula, download_vanilla_server};
 use crate::{ioutil, make_progress_bar, ContextExt};
 use anyhow::{anyhow, bail, Context};
 use serde::Deserialize;
-use sha2::Sha256;
 use std::cell::RefCell;
 use std::fs;
 use std::fs::File;
@@ -59,13 +59,14 @@ pub fn install_paper(args: ServerInstallArgs<'_>) -> anyhow::Result<()> {
         "paperclip-{}-{}.jar",
         args.version_name, paper_build
     ));
-    ioutil::download_large_with_hash::<Sha256, _>(
+    ioutil::download_large_with_hash(
         args.client,
-        &format!(
+        format!(
             "https://api.papermc.io/v2/projects/paper/versions/{}/builds/{}/downloads/{}",
             args.version_name, paper_build, build_metadata.downloads.application.name
         ),
         &paperclip_path,
+        HashAlgorithm::Sha256,
         &build_metadata.downloads.application.sha256.inner,
         |download_size| {
             if let Some(download_size) = download_size {
